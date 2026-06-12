@@ -4,6 +4,7 @@ import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial'
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2'
 import { camera, renderer, scene } from './scene'
 import { allObjects } from './state'
+import { CELL_SIZE } from './grid'
 
 export type { LineSegments2 }
 
@@ -75,16 +76,35 @@ window.addEventListener('resize', () => {
   })
 })
 
-/** Construye un objeto de escena a partir de un GLB cargado y lo registra.
- *  - targetBase: tamano deseado (en metros) del lado mas largo de la base,
- *    de modo que el objeto encaje en la rejilla. La altura se escala en
- *    proporcion para conservar las dimensiones originales del modelo.
- *  - position: posicion inicial del wrapper en el plano (X, Z). */
+/** Opciones para construir un objeto de escena. */
+export interface BuildOptions {
+  /** Tamano deseado (m) del lado mas largo de la base. Ignorado si keepScale. */
+  targetBase?: number
+  /** Posicion inicial del wrapper en el plano. Se alinea a la rejilla. */
+  position?: THREE.Vector3
+  /** Si es true, NO reescala el modelo (conserva su tamano original). */
+  keepScale?: boolean
+  /** Si es true, NO recentra: conserva el origen (0,0,0) del modelo. */
+  keepOrigin?: boolean
+}
+
+/** Redondea un valor al multiplo de CELL_SIZE mas cercano (alinea a rejilla). */
+function snapToGrid(v: number): number {
+  return Math.round(v / CELL_SIZE) * CELL_SIZE
+}
+
+/** Construye un objeto de escena a partir de un GLB cargado y lo registra. */
 export function buildSceneObject(
   gltfScene: THREE.Group,
-  targetBase = 1.2,
-  position: THREE.Vector3 = new THREE.Vector3(0, 0, 0)
+  opts: BuildOptions = {}
 ): { wrapper: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
+  const {
+    targetBase = 1.2,
+    position = new THREE.Vector3(0, 0, 0),
+    keepScale = false,
+    keepOrigin = false,
+  } = opts
+
   gltfScene.name = 'model'
 
   const bbox = new THREE.Box3().setFromObject(gltfScene)
@@ -93,19 +113,31 @@ export function buildSceneObject(
   const size = new THREE.Vector3()
   bbox.getSize(size)
 
-  gltfScene.position.set(-center.x, -bbox.min.y, -center.z)
+  // Posicionamiento del modelo dentro del wrapper.
+  if (keepOrigin) {
+    // Conservar el origen (0,0,0) original del modelo: no se toca su posicion.
+    gltfScene.position.set(0, 0, 0)
+  } else {
+    // Centrar en X/Z y apoyar la base en y = 0.
+    gltfScene.position.set(-center.x, -bbox.min.y, -center.z)
+  }
 
-  const baseSize = Math.max(size.x, size.z)
-  if (baseSize > 0) {
-    const s = targetBase / baseSize
-    gltfScene.scale.setScalar(s)
-    gltfScene.position.multiplyScalar(s)
+  // Escalado (solo si no se pide conservar la escala original).
+  if (!keepScale) {
+    const baseSize = Math.max(size.x, size.z)
+    if (baseSize > 0) {
+      const s = targetBase / baseSize
+      gltfScene.scale.setScalar(s)
+      if (!keepOrigin) gltfScene.position.multiplyScalar(s)
+    }
   }
 
   const wrapper = new THREE.Group()
   wrapper.name = 'wrapper'
   wrapper.add(gltfScene)
-  wrapper.position.copy(position)
+  // El wrapper se coloca SIEMPRE sobre un punto de la rejilla, de modo que el
+  // origen (0,0,0) del modelo coincida con una interseccion de la rejilla.
+  wrapper.position.set(snapToGrid(position.x), position.y, snapToGrid(position.z))
   scene.add(wrapper)
 
   const whiteMat = new THREE.MeshBasicMaterial({

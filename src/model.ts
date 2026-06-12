@@ -13,11 +13,12 @@ function loadOne(def: ModelDef, position: THREE.Vector3): Promise<void> {
     loader.load(
       import.meta.env.BASE_URL + def.url,
       (gltf) => {
-        const obj = buildSceneObject(
-          gltf.scene as THREE.Group,
-          targetBaseMeters(def),
-          position
-        )
+        const obj = buildSceneObject(gltf.scene as THREE.Group, {
+          targetBase: targetBaseMeters(def),
+          position,
+          keepScale: def.keepScale,
+          keepOrigin: def.keepOrigin,
+        })
         allObjects.push(obj)
         setActiveObject(obj)
         resolve()
