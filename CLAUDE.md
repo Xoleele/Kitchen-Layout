@@ -1,0 +1,1 @@
+siempre que termines de hacerle una modificación a la app, has un resumen en una frase (esto ya que utilizo github desktop)
