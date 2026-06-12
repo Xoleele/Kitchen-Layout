@@ -97,11 +97,11 @@ function snapToGrid(v: number): number {
 /** Construye un objeto de escena a partir de un GLB cargado y lo registra.
  *
  *  Jerarquia:  wrapper (anclado a rejilla, se mueve al arrastrar)
- *                └─ pivot (centrado en el centro de la celda; se ROTA aqui)
+ *                └─ pivot (eje de giro; se reubica al centro de la casilla
+ *                          bajo el centro del objeto antes de cada rotacion)
  *                     ├─ model
  *                     └─ edges
- *  Rotar el pivot hace que el objeto gire alrededor del centro de la celda
- *  sin que el ancla (wrapper) se desplace. */
+ */
 export function buildSceneObject(
   gltfScene: THREE.Group,
   opts: BuildOptions = {}
@@ -138,16 +138,11 @@ export function buildSceneObject(
     }
   }
 
-  // El centro de la celda esta a +CELL_SIZE/2 del origen (que esta en la
-  // interseccion). Colocamos el pivot ahi y compensamos al modelo restando ese
-  // offset, de modo que el modelo no cambie de sitio, pero el pivot quede
-  // exactamente en el centro de la celda como eje de giro.
-  const half = CELL_SIZE / 2
+  // Pivot intermedio. Arranca en el origen; al rotar se reubica al centro de la
+  // casilla que queda bajo el centro del objeto (ver interaction.ts).
   const pivot = new THREE.Group()
   pivot.name = 'pivot'
-  pivot.position.set(half, 0, half)
-  gltfScene.position.x -= half
-  gltfScene.position.z -= half
+  pivot.position.set(0, 0, 0)
   pivot.add(gltfScene)
 
   const wrapper = new THREE.Group()

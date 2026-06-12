@@ -3,8 +3,9 @@ import { camera, renderer } from './scene'
 import { allObjects, activeObject, setActiveObject, SNAP, raycaster, mouse } from './state'
 import { cloneObject } from './clone'
 import { SceneObject } from './types'
+import { CELL_SIZE } from './grid'
 
-// ─── ESTADO DE INTERACCIÓN ────────────────────────────────────────────────────
+// ─── ESTADO DE INTERACCION ────────────────────────────────────────────────────
 let isDragging  = false
 let currentObj: SceneObject | null = null
 
@@ -36,9 +37,37 @@ function hitObject(event: MouseEvent): SceneObject | null {
   return allObjects.find(o => o.meshes.includes(hitMesh)) ?? null
 }
 
+// ─── ROTACION SOBRE LA CASILLA BAJO EL CENTRO DEL OBJETO ─────────────────────
+// 1) Se calcula el centro (en el mundo) de la huella actual del objeto.
+// 2) Se halla la casilla que cae bajo ese centro y se toma SU centro.
+// 3) Se rota el objeto 90 grados alrededor de ese punto del mundo.
+// Funciona en cualquier orientacion porque la casilla se recalcula cada vez.
+function rotateOverCellUnderObject(obj: SceneObject): void {
+  const half = CELL_SIZE / 2
+
+  // (1) Centro de la huella del objeto en coordenadas del mundo.
+  const box = new THREE.Box3().setFromObject(obj.pivot)
+  const c = new THREE.Vector3()
+  box.getCenter(c)
+
+  // (2) Centro de la casilla que queda bajo ese centro.
+  const pivotX = Math.floor(c.x / CELL_SIZE) * CELL_SIZE + half
+  const pivotZ = Math.floor(c.z / CELL_SIZE) * CELL_SIZE + half
+
+  // (3) Rotar el wrapper completo 90 grados alrededor de ese punto del mundo.
+  const angle = Math.PI / 2
+  const w = obj.wrapper
+  const dx = w.position.x - pivotX
+  const dz = w.position.z - pivotZ
+  // Rotacion de 90 grados (horaria vista desde arriba): (x, z) -> (z, -x)
+  w.position.x = pivotX + dz
+  w.position.z = pivotZ - dx
+  w.rotation.y += angle
+}
+
 // ─── MOUSE DOWN ───────────────────────────────────────────────────────────────
 renderer.domElement.addEventListener('mousedown', (e: MouseEvent) => {
-  if (e.button !== 0) return   // solo botón izquierdo
+  if (e.button !== 0) return   // solo boton izquierdo
   if (allObjects.length === 0) return
 
   mouseDownPos = { x: e.clientX, y: e.clientY }
@@ -50,7 +79,7 @@ renderer.domElement.addEventListener('mousedown', (e: MouseEvent) => {
     // Ctrl + click: clonar y arrastrar el clon
     const cloned = cloneObject(owner.wrapper)
     cloned.wrapper.position.copy(owner.wrapper.position)
-    // La rotacion vive en el pivot y ya viene clonada por clone(true).
+    cloned.wrapper.rotation.y = owner.wrapper.rotation.y
     currentObj = cloned
   } else {
     currentObj = owner
@@ -94,7 +123,7 @@ renderer.domElement.addEventListener('mouseup', (e: MouseEvent) => {
   // Rotar solo si fue un clic sin arrastrar y sin Ctrl
   if (dist < 4 && !e.ctrlKey) {
     const owner = hitObject(e)
-    if (owner) owner.pivot.rotation.y += Math.PI / 2
+    if (owner) rotateOverCellUnderObject(owner)
   }
 
   isDragging = false
