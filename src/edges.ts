@@ -89,9 +89,13 @@ export function buildFirstObject(
 
   gltfScene.position.set(-center.x, -bbox.min.y, -center.z)
 
-  const targetH = 3
-  if (size.y > 0) {
-    const s = targetH / size.y
+  // Ajuste a la rejilla de 60 cm:
+  //   base 2x2 celdas = 1.20 m  (lado horizontal X/Z)
+  //   con la proporción original 2x2x3, el alto resulta 1.80 m = 3 celdas
+  const targetBase = 1.2
+  const baseSize = Math.max(size.x, size.z)
+  if (baseSize > 0) {
+    const s = targetBase / baseSize
     gltfScene.scale.setScalar(s)
     gltfScene.position.multiplyScalar(s)
   }

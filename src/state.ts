@@ -11,8 +11,8 @@ export function setActiveObject(obj: SceneObject | null): void {
   activeObject = obj
 }
 
-/** Snap al grid */
-export const SNAP = 1
+/** Snap al grid (igual al tamaño de celda: 60 cm) */
+export const SNAP = 0.6
 
 /** Raycaster compartido */
 export const raycaster = new THREE.Raycaster()

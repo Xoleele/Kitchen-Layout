@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { scene } from './scene'
 
-export const CELL_SIZE = 1
+export const CELL_SIZE = 0.6
 
 // ─── REJILLA INFINITA (shader procedural) ────────────────────────────────────
 const gridMat = new THREE.ShaderMaterial({
