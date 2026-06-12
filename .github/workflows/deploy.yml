@@ -1,0 +1,52 @@
+name: Deploy to GitHub Pages
+
+# Se ejecuta automáticamente cada vez que subes código a la rama master
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:   # permite lanzarlo a mano desde la pestaña Actions
+
+# Permisos necesarios para que la Action pueda publicar en Pages
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Evita que dos despliegues choquen entre sí
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar el código
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Construir la app
+        run: npm run build
+
+      - name: Subir el resultado (carpeta dist)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Publicar en GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
