@@ -8,7 +8,7 @@ import { allObjects } from './state'
 export type { LineSegments2 }
 
 /** Genera aristas visibles (LineSegments2) para todos los meshes de un grupo,
- *  añadiéndolas al wrapper. Devuelve los LineSegments2 creados. */
+ *  anadiendolas al wrapper. Devuelve los LineSegments2 creados. */
 export function addEdgesToWrapper(
   modelGroup: THREE.Object3D,
   wrapper: THREE.Group
@@ -64,7 +64,7 @@ export function refreshEdges(
   return addEdgesToWrapper(modelGroup, wrapper)
 }
 
-/** Actualiza resolución de todos los LineMaterial al redimensionar. */
+/** Actualiza resolucion de todos los LineMaterial al redimensionar. */
 window.addEventListener('resize', () => {
   allObjects.forEach(obj => {
     obj.edges.forEach(e => {
@@ -75,9 +75,15 @@ window.addEventListener('resize', () => {
   })
 })
 
-/** Crea el primer objeto desde el GLB cargado y lo registra. */
-export function buildFirstObject(
-  gltfScene: THREE.Group
+/** Construye un objeto de escena a partir de un GLB cargado y lo registra.
+ *  - targetBase: tamano deseado (en metros) del lado mas largo de la base,
+ *    de modo que el objeto encaje en la rejilla. La altura se escala en
+ *    proporcion para conservar las dimensiones originales del modelo.
+ *  - position: posicion inicial del wrapper en el plano (X, Z). */
+export function buildSceneObject(
+  gltfScene: THREE.Group,
+  targetBase = 1.2,
+  position: THREE.Vector3 = new THREE.Vector3(0, 0, 0)
 ): { wrapper: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
   gltfScene.name = 'model'
 
@@ -89,10 +95,6 @@ export function buildFirstObject(
 
   gltfScene.position.set(-center.x, -bbox.min.y, -center.z)
 
-  // Ajuste a la rejilla de 60 cm:
-  //   base 2x2 celdas = 1.20 m  (lado horizontal X/Z)
-  //   con la proporción original 2x2x3, el alto resulta 1.80 m = 3 celdas
-  const targetBase = 1.2
   const baseSize = Math.max(size.x, size.z)
   if (baseSize > 0) {
     const s = targetBase / baseSize
@@ -103,6 +105,7 @@ export function buildFirstObject(
   const wrapper = new THREE.Group()
   wrapper.name = 'wrapper'
   wrapper.add(gltfScene)
+  wrapper.position.copy(position)
   scene.add(wrapper)
 
   const whiteMat = new THREE.MeshBasicMaterial({
@@ -127,4 +130,11 @@ export function buildFirstObject(
   const edges = addEdgesToWrapper(gltfScene, wrapper)
 
   return { wrapper, meshes, edges }
+}
+
+/** Alias retrocompatible: construye un objeto en el origen con base 1.2 m. */
+export function buildFirstObject(
+  gltfScene: THREE.Group
+): { wrapper: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
+  return buildSceneObject(gltfScene)
 }
