@@ -1,0 +1,18 @@
+{
+  "name": "app-3d-isometrica",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "three": "0.128.0"
+  },
+  "devDependencies": {
+    "@types/three": "0.128.0",
+    "typescript": "5.4.5",
+    "vite": "4.5.3"
+  }
+}

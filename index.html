@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>App 3D Isométrica</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #ffffff; font-family: sans-serif; overflow: hidden; }
+    #canvas-container { width: 100vw; height: 100vh; display: block; }
+    canvas { display: block; background: #ffffff; }
+    .kitchen-icon-container {
+      position: absolute;
+      top: 24px;
+      right: 24px;
+      z-index: 1000;
+      background: rgba(255, 255, 255, 0.85);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      width: 64px;
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.02);
+      cursor: pointer;
+      transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .kitchen-icon-container:hover {
+      transform: translateY(-4px) scale(1.05);
+      box-shadow: 0 20px 40px rgba(99, 102, 241, 0.12), 0 0 0 4px rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.3);
+      background: rgba(255, 255, 255, 0.95);
+    }
+    .kitchen-icon-container:active {
+      transform: translateY(-1px) scale(0.98);
+      box-shadow: 0 8px 20px rgba(99, 102, 241, 0.08);
+    }
+    .kitchen-icon-container::after {
+      content: "Módulo de cocina";
+      position: absolute;
+      bottom: -35px;
+      right: 50%;
+      transform: translateX(50%) translateY(10px);
+      background: #1e293b;
+      color: #ffffff;
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 500;
+      border-radius: 6px;
+      white-space: nowrap;
+      opacity: 0;
+      pointer-events: none;
+      transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    }
+    .kitchen-icon-container:hover::after {
+      opacity: 1;
+      transform: translateX(50%) translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="kitchen-icon-container">
+    <svg width="44" height="44" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <!-- Gradients -->
+        <linearGradient id="cab-wood" x1="0" y1="0" x2="0" y2="64">
+          <stop offset="0%" stop-color="#D97706" />
+          <stop offset="100%" stop-color="#B45309" />
+        </linearGradient>
+        <linearGradient id="cab-body" x1="0" y1="0" x2="64" y2="64">
+          <stop offset="0%" stop-color="#FFFFFF" />
+          <stop offset="100%" stop-color="#F8FAFC" />
+        </linearGradient>
+        <linearGradient id="gold-metal" x1="0" y1="0" x2="64" y2="0">
+          <stop offset="0%" stop-color="#FBBF24" />
+          <stop offset="50%" stop-color="#F59E0B" />
+          <stop offset="100%" stop-color="#D97706" />
+        </linearGradient>
+        
+        <!-- Filters -->
+        <filter id="soft-shadow" x="-20%" y="-20%" width="140%" height="140%">
+          <feDropShadow dx="0" dy="2" stdDeviation="1.5" flood-color="#0f172a" flood-opacity="0.1" />
+        </filter>
+      </defs>
+      
+      <!-- Upper Cabinet -->
+      <g filter="url(#soft-shadow)">
+        <rect x="14" y="8" width="36" height="18" rx="3" fill="url(#cab-body)" stroke="#64748B" stroke-width="1.5" />
+        <!-- Separation line -->
+        <line x1="32" y1="8" x2="32" y2="26" stroke="#CBD5E1" stroke-width="1.5" />
+        <!-- Handles (Sleek minimalist gold dots) -->
+        <circle cx="29" cy="20" r="1.5" fill="url(#gold-metal)" />
+        <circle cx="35" cy="20" r="1.5" fill="url(#gold-metal)" />
+      </g>
+      
+      <!-- Countertop (Sleek wooden panel) -->
+      <rect x="10" y="30" width="44" height="4" rx="1.5" fill="url(#cab-wood)" filter="url(#soft-shadow)" />
+      
+      <!-- Lower Cabinet -->
+      <g filter="url(#soft-shadow)">
+        <rect x="14" y="34" width="36" height="22" rx="3" fill="url(#cab-body)" stroke="#64748B" stroke-width="1.5" />
+        
+        <!-- Drawer horizontal line -->
+        <line x1="14" y1="41" x2="50" y2="41" stroke="#64748B" stroke-width="1.2" />
+        <!-- Vertical separator -->
+        <line x1="32" y1="41" x2="32" y2="56" stroke="#CBD5E1" stroke-width="1.5" />
+        
+        <!-- Top Drawer Handle -->
+        <rect x="27" y="37" width="10" height="1.5" rx="0.75" fill="url(#gold-metal)" />
+        
+        <!-- Lower Door Handles (Sleek vertical bars) -->
+        <rect x="28.5" y="45" width="1.5" height="5" rx="0.75" fill="url(#gold-metal)" />
+        <rect x="34" y="45" width="1.5" height="5" rx="0.75" fill="url(#gold-metal)" />
+      </g>
+      
+      <!-- Zocalo / Kickboard (Base recess) -->
+      <path d="M17 56H47V59H17V56Z" fill="#94A3B8" />
+    </svg>
+  </div>
+  <div id="canvas-container"></div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

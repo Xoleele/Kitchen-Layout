@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>App 3D Isométrica</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #ffffff; font-family: sans-serif; overflow: hidden; }
+
+    #canvas-container {
+      width: 100vw;
+      height: 100vh;
+      display: block;
+    }
+
+    canvas { display: block; background: #ffffff; }
+  </style>
+</head>
+<body>
+
+<div id="canvas-container"></div>
+
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+  onerror="document.body.innerHTML='<p style=padding:2rem;font-family:sans-serif;color:#c00>Error: no se pudo cargar Three.js. Verificá tu conexión a internet.</p>'"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/lines/LineSegmentsGeometry.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/lines/LineMaterial.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/lines/LineSegments2.js"></script>
+<script>
+// ─── ESCENA ───────────────────────────────────────────────────
+const container = document.getElementById('canvas-container');
+
+const W = window.innerWidth;
+const H = window.innerHeight;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xffffff);
+
+// ─── CÁMARA ORTOGRÁFICA (ISOMÉTRICA) ──────────────────────────
+const aspect  = W / H;
+const frustum = 5.6;
+const camera  = new THREE.OrthographicCamera(
+  -frustum * aspect, frustum * aspect,
+   frustum, -frustum,
+   0.1, 1000
+);
+camera.position.set(15, 15, 15);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(W, H);
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.shadowMap.enabled = false;
+container.appendChild(renderer.domElement);
+
+// ─── LUCES ────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xffffff, 1.5));
+
+// ─── REJILLA INFINITA (shader procedural) ─────────────────────
+const CELL_SIZE = 1;
+
+const gridMat = new THREE.ShaderMaterial({
+  side: THREE.DoubleSide,
+  transparent: true,
+  depthWrite: false,
+  uniforms: {
+    uCellSize:  { value: CELL_SIZE },
+    uThickness: { value: 0.04 },
+  },
+  vertexShader: `
+    varying vec2 vWorldXZ;
+    void main() {
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWorldXZ = wp.xz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: `
+    uniform float uCellSize;
+    uniform float uThickness;
+    varying vec2 vWorldXZ;
+    void main() {
+      vec2 cell  = vWorldXZ / uCellSize;
+      vec2 d     = abs(fract(cell) - 0.5);
+      vec2 fw    = fwidth(cell);
+      vec2 lines = smoothstep(uThickness * 0.5 + fw, uThickness * 0.5 - fw, 0.5 - d);
+      float isLine = max(lines.x, lines.y);
+
+      vec3 lineCol = vec3(0.90);
+      if (isLine < 0.01) discard;
+      gl_FragColor = vec4(lineCol, isLine);
+    }
+  `,
+});
+
+const gridGeo   = new THREE.PlaneGeometry(2000, 2000);
+const gridPlane = new THREE.Mesh(gridGeo, gridMat);
+gridPlane.rotation.x = -Math.PI / 2;
+gridPlane.position.y = -0.001;
+scene.add(gridPlane);
+
+// Plano invisible para raycasting del drag
+const groundGeo = new THREE.PlaneGeometry(2000, 2000);
+const groundMat = new THREE.MeshBasicMaterial({ visible: false });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.name = 'ground';
+scene.add(ground);
+
+// ─── ESTADO ───────────────────────────────────────────────────
+let box         = null;   // objeto actualmente arrastrado
+let boxMeshes   = [];     // meshes del objeto activo para raycasting
+let selEdges    = [];     // aristas del objeto activo
+let allObjects  = [];     // todos los wrappers en escena
+let isDragging  = false;
+let modelHeight  = 0;
+
+const SNAP = CELL_SIZE;
+const raycaster  = new THREE.Raycaster();
+const mouse      = new THREE.Vector2();
+const dragPlane  = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const dragOffset = new THREE.Vector3();
+
+// ─── ARISTAS SIEMPRE VISIBLES (grosor real con LineSegments2) ──
+function addEdgesToWrapper(modelGroup, wrapper) {
+  selEdges.forEach(e => wrapper.remove(e));
+  selEdges = [];
+
+  modelGroup.traverse((child) => {
+    if (!child.isMesh) return;
+
+    // Calcular transformación del mesh relativa al wrapper
+    child.updateWorldMatrix(true, false);
+    wrapper.updateWorldMatrix(true, false);
+    const relMatrix = new THREE.Matrix4()
+      .copy(wrapper.matrixWorld).invert()
+      .multiply(child.matrixWorld);
+
+    // Extraer posiciones de aristas y transformarlas al espacio del wrapper
+    const edgesGeo = new THREE.EdgesGeometry(child.geometry);
+    const posAttr  = edgesGeo.attributes.position;
+    const positions = [];
+    for (let i = 0; i < posAttr.count; i++) {
+      const v = new THREE.Vector3().fromBufferAttribute(posAttr, i);
+      v.applyMatrix4(relMatrix);
+      positions.push(v.x, v.y, v.z);
+    }
+
+    const lineGeo = new THREE.LineSegmentsGeometry();
+    lineGeo.setPositions(positions);
+
+    const lineMat = new THREE.LineMaterial({
+      color: 0x000000,
+      linewidth: 2,       // píxeles reales
+      depthTest: true,
+      resolution: new THREE.Vector2(window.innerWidth, window.innerHeight),
+    });
+
+    const line = new THREE.LineSegments2(lineGeo, lineMat);
+    wrapper.add(line);
+    selEdges.push(line);
+  });
+}
+
+// Actualizar resolución de LineMaterial al redimensionar
+window.addEventListener('resize', () => {
+  allObjects.forEach(obj => {
+    obj.edges.forEach(e => {
+      if (e.material && e.material.resolution) {
+        e.material.resolution.set(window.innerWidth, window.innerHeight);
+      }
+    });
+  });
+});
+
+function setEdgesVisible(v) {
+  // aristas siempre visibles — no se ocultan
+}
+
+// ─── CLONAR OBJETO ────────────────────────────────────────────
+function cloneObject(sourceWrapper) {
+  const clone = sourceWrapper.clone(true);
+  clone.name  = 'wrapper';
+
+  // Eliminar todos los LineSegments2 clonados del source (los regeneramos frescos)
+  const toRemove = [];
+  clone.traverse((child) => {
+    if (child instanceof THREE.LineSegments2) toRemove.push(child);
+  });
+  toRemove.forEach(c => c.parent && c.parent.remove(c));
+
+  // Aplicar material blanco a los meshes del clon
+  const whiteMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.FrontSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  const cloneMeshes = [];
+  clone.traverse((child) => {
+    if (child.isMesh) {
+      child.material = whiteMat.clone();
+      cloneMeshes.push(child);
+    }
+  });
+
+  scene.add(clone);
+  renderer.render(scene, camera); // actualizar matrixWorld
+
+  // Encontrar el grupo del modelo dentro del clon (llamado 'model')
+  const cloneModelGroup = clone.getObjectByName('model');
+
+  // Regenerar aristas usando una variable local, sin tocar selEdges global
+  const savedEdges = selEdges;
+  selEdges = [];
+  addEdgesToWrapper(cloneModelGroup || clone, clone);
+  const cloneEdges = selEdges;
+  selEdges = savedEdges;
+
+  allObjects.push({ wrapper: clone, meshes: cloneMeshes, edges: cloneEdges });
+  return { wrapper: clone, meshes: cloneMeshes, edges: cloneEdges };
+}
+
+// ─── CARGA DEL MODELO GLB ─────────────────────────────────────
+
+const GLB_BASE64 = 'Z2xURgIAAABQHwAAHBkAAEpTT057ImFzc2V0Ijp7ImNvcHlyaWdodCI6IkNvcHlyaWdodCAyMDIwIFRyaW1ibGUgSW5jLiBBbGwgUmlnaHRzIFJlc2VydmVkLiIsImdlbmVyYXRvciI6IlNrZXRjaFVwIEdMVEYgRXhwb3J0ZXIiLCJ2ZXJzaW9uIjoiMi4wIn0sImFjY2Vzc29ycyI6W3siYnVmZmVyVmlldyI6MCwiY29tcG9uZW50VHlwZSI6NTEyMywiY291bnQiOjEyLCJ0eXBlIjoiU0NBTEFSIn0seyJidWZmZXJWaWV3IjoxLCJjb21wb25lbnRUeXBlIjo1MTI2LCJjb3VudCI6MTIsInR5cGUiOiJWRUMzIiwibWF4IjpbNzguNzQwMTU4MDgxMDU0NjksNzguNzQwMTU4MDgxMDU0NjksMTE4LjExMDIzNzEyMTU4MjAzXSwibWluIjpbMC4wLDAuMCwxMTguMTEwMjM3MTIxNTgyMDNdfSx7ImJ1ZmZlclZpZXciOjIsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50IjoxMiwidHlwZSI6IlZFQzMiLCJtYXgiOlswLjAsMC4wLDEuMF0sIm1pbiI6WzAuMCwwLjAsMS4wXX0seyJidWZmZXJWaWV3IjozLCJjb21wb25lbnRUeXBlIjo1MTIzLCJjb3VudCI6NiwidHlwZSI6IlNDQUxBUiJ9LHsiYnVmZmVyVmlldyI6NCwiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjYsInR5cGUiOiJWRUMzIiwibWF4IjpbNzguNzQwMTU4MDgxMDU0NjksNzguNzQwMTU4MDgxMDU0NjksMTE4LjExMDIzNzEyMTU4MjAzXSwibWluIjpbNzguNzQwMTU4MDgxMDU0NjksMC4wLDAuMF19LHsiYnVmZmVyVmlldyI6NSwiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjYsInR5cGUiOiJWRUMzIiwibWF4IjpbMS4wLDAuMCwwLjBdLCJtaW4iOlsxLjAsMC4wLDAuMF19LHsiYnVmZmVyVmlldyI6NiwiY29tcG9uZW50VHlwZSI6NTEyMywiY291bnQiOjYsInR5cGUiOiJTQ0FMQVIifSx7ImJ1ZmZlclZpZXciOjcsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50Ijo2LCJ0eXBlIjoiVkVDMyIsIm1heCI6WzM5LjM3MDA3OTA0MDUyNzM0NywzOS4zNzAwNzkwNDA1MjczNDcsMTE4LjExMDIzNzEyMTU4MjAzXSwibWluIjpbMC4wLDM5LjM3MDA3OTA0MDUyNzM0NywwLjBdfSx7ImJ1ZmZlclZpZXciOjgsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50Ijo2LCJ0eXBlIjoiVkVDMyIsIm1heCI6WzAuMCwtMS4wLDAuMF0sIm1pbiI6WzAuMCwtMS4wLDAuMF19LHsiYnVmZmVyVmlldyI6OSwiY29tcG9uZW50VHlwZSI6NTEyMywiY291bnQiOjYsInR5cGUiOiJTQ0FMQVIifSx7ImJ1ZmZlclZpZXciOjEwLCJjb21wb25lbnRUeXBlIjo1MTI2LCJjb3VudCI6NiwidHlwZSI6IlZFQzMiLCJtYXgiOlszOS4zNzAwNzkwNDA1MjczNDcsMzkuMzcwMDc5MDQwNTI3MzQ3LDExOC4xMTAyMzcxMjE1ODIwM10sIm1pbiI6WzM5LjM3MDA3OTA0MDUyNzM0NywwLjAsMC4wXX0seyJidWZmZXJWaWV3IjoxMSwiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjYsInR5cGUiOiJWRUMzIiwibWF4IjpbLTEuMCwtMC4wLC0wLjBdLCJtaW4iOlstMS4wLC0wLjAsLTAuMF19LHsiYnVmZmVyVmlldyI6MTIsImNvbXBvbmVudFR5cGUiOjUxMjMsImNvdW50Ijo2LCJ0eXBlIjoiU0NBTEFSIn0seyJidWZmZXJWaWV3IjoxMywiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjYsInR5cGUiOiJWRUMzIiwibWF4IjpbNzguNzQwMTU4MDgxMDU0NjksNzguNzQwMTU4MDgxMDU0NjksMTE4LjExMDIzNzEyMTU4MjAzXSwibWluIjpbMC4wLDc4Ljc0MDE1ODA4MTA1NDY5LDAuMF19LHsiYnVmZmVyVmlldyI6MTQsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50Ijo2LCJ0eXBlIjoiVkVDMyIsIm1heCI6WzAuMCwxLjAsMC4wXSwibWluIjpbMC4wLDEuMCwwLjBdfSx7ImJ1ZmZlclZpZXciOjE1LCJjb21wb25lbnRUeXBlIjo1MTIzLCJjb3VudCI6NiwidHlwZSI6IlNDQUxBUiJ9LHsiYnVmZmVyVmlldyI6MTYsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50Ijo2LCJ0eXBlIjoiVkVDMyIsIm1heCI6Wzc4Ljc0MDE1ODA4MTA1NDY5LDAuMCwxMTguMTEwMjM3MTIxNTgyMDNdLCJtaW4iOlszOS4zNzAwNzkwNDA1MjczNDcsMC4wLDAuMF19LHsiYnVmZmVyVmlldyI6MTcsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50Ijo2LCJ0eXBlIjoiVkVDMyIsIm1heCI6WzAuMCwtMS4wLDAuMF0sIm1pbiI6WzAuMCwtMS4wLDAuMF19LHsiYnVmZmVyVmlldyI6MTgsImNvbXBvbmVudFR5cGUiOjUxMjMsImNvdW50Ijo2LCJ0eXBlIjoiU0NBTEFSIn0seyJidWZmZXJWaWV3IjoxOSwiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjYsInR5cGUiOiJWRUMzIiwibWF4IjpbMC4wLDc4Ljc0MDE1ODA4MTA1NDY5LDExOC4xMTAyMzcxMjE1ODIwM10sIm1pbiI6WzAuMCwzOS4zNzAwNzkwNDA1MjczNDcsMC4wXX0seyJidWZmZXJWaWV3IjoyMCwiY29tcG9uZW50VHlwZSI6NTEyNiwiY291bnQiOjYsInR5cGUiOiJWRUMzIiwibWF4IjpbLTEuMCwtMC4wLC0wLjBdLCJtaW4iOlstMS4wLC0wLjAsLTAuMF19LHsiYnVmZmVyVmlldyI6MjEsImNvbXBvbmVudFR5cGUiOjUxMjMsImNvdW50IjoxMiwidHlwZSI6IlNDQUxBUiJ9LHsiYnVmZmVyVmlldyI6MjIsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50IjoxMiwidHlwZSI6IlZFQzMiLCJtYXgiOls3OC43NDAxNTgwODEwNTQ2OSw3OC43NDAxNTgwODEwNTQ2OSwwLjBdLCJtaW4iOlswLjAsMC4wLDAuMF19LHsiYnVmZmVyVmlldyI6MjMsImNvbXBvbmVudFR5cGUiOjUxMjYsImNvdW50IjoxMiwidHlwZSI6IlZFQzMiLCJtYXgiOlswLjAsMC4wLC0xLjBdLCJtaW4iOlswLjAsMC4wLC0xLjBdfV0sImJ1ZmZlclZpZXdzIjpbeyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjAsImJ5dGVMZW5ndGgiOjI0LCJ0YXJnZXQiOjM0OTYzfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6MjQsImJ5dGVMZW5ndGgiOjE0NCwidGFyZ2V0IjozNDk2Mn0seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjE2OCwiYnl0ZUxlbmd0aCI6MTQ0LCJ0YXJnZXQiOjM0OTYyfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6MzEyLCJieXRlTGVuZ3RoIjoxMiwidGFyZ2V0IjozNDk2M30seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjMyNCwiYnl0ZUxlbmd0aCI6NzIsInRhcmdldCI6MzQ5NjJ9LHsiYnVmZmVyIjowLCJieXRlT2Zmc2V0IjozOTYsImJ5dGVMZW5ndGgiOjcyLCJ0YXJnZXQiOjM0OTYyfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6NDY4LCJieXRlTGVuZ3RoIjoxMiwidGFyZ2V0IjozNDk2M30seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjQ4MCwiYnl0ZUxlbmd0aCI6NzIsInRhcmdldCI6MzQ5NjJ9LHsiYnVmZmVyIjowLCJieXRlT2Zmc2V0Ijo1NTIsImJ5dGVMZW5ndGgiOjcyLCJ0YXJnZXQiOjM0OTYyfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6NjI0LCJieXRlTGVuZ3RoIjoxMiwidGFyZ2V0IjozNDk2M30seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjYzNiwiYnl0ZUxlbmd0aCI6NzIsInRhcmdldCI6MzQ5NjJ9LHsiYnVmZmVyIjowLCJieXRlT2Zmc2V0Ijo3MDgsImJ5dGVMZW5ndGgiOjcyLCJ0YXJnZXQiOjM0OTYyfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6NzgwLCJieXRlTGVuZ3RoIjoxMiwidGFyZ2V0IjozNDk2M30seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjc5MiwiYnl0ZUxlbmd0aCI6NzIsInRhcmdldCI6MzQ5NjJ9LHsiYnVmZmVyIjowLCJieXRlT2Zmc2V0Ijo4NjQsImJ5dGVMZW5ndGgiOjcyLCJ0YXJnZXQiOjM0OTYyfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6OTM2LCJieXRlTGVuZ3RoIjoxMiwidGFyZ2V0IjozNDk2M30seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjk0OCwiYnl0ZUxlbmd0aCI6NzIsInRhcmdldCI6MzQ5NjJ9LHsiYnVmZmVyIjowLCJieXRlT2Zmc2V0IjoxMDIwLCJieXRlTGVuZ3RoIjo3MiwidGFyZ2V0IjozNDk2Mn0seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjEwOTIsImJ5dGVMZW5ndGgiOjEyLCJ0YXJnZXQiOjM0OTYzfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6MTEwNCwiYnl0ZUxlbmd0aCI6NzIsInRhcmdldCI6MzQ5NjJ9LHsiYnVmZmVyIjowLCJieXRlT2Zmc2V0IjoxMTc2LCJieXRlTGVuZ3RoIjo3MiwidGFyZ2V0IjozNDk2Mn0seyJidWZmZXIiOjAsImJ5dGVPZmZzZXQiOjEyNDgsImJ5dGVMZW5ndGgiOjI0LCJ0YXJnZXQiOjM0OTYzfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6MTI3MiwiYnl0ZUxlbmd0aCI6MTQ0LCJ0YXJnZXQiOjM0OTYyfSx7ImJ1ZmZlciI6MCwiYnl0ZU9mZnNldCI6MTQxNiwiYnl0ZUxlbmd0aCI6MTQ0LCJ0YXJnZXQiOjM0OTYyfV0sImJ1ZmZlcnMiOlt7ImJ5dGVMZW5ndGgiOjE1NjB9XSwibWF0ZXJpYWxzIjpbeyJwYnJNZXRhbGxpY1JvdWdobmVzcyI6eyJiYXNlQ29sb3JGYWN0b3IiOlswLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDAuOTgwMzkyMTU4MDMxNDYzNiwxLjBdfSwibmFtZSI6ImRlZmF1bHRfZmFjZV9tYXRlcmlhbCIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsMSIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsMiIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsMyIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsNCIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsNSIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsNiIsImRvdWJsZVNpZGVkIjp0cnVlfSx7InBick1ldGFsbGljUm91Z2huZXNzIjp7ImJhc2VDb2xvckZhY3RvciI6WzAuOTgwMzkyMTU4MDMxNDYzNiwwLjk4MDM5MjE1ODAzMTQ2MzYsMC45ODAzOTIxNTgwMzE0NjM2LDEuMF19LCJuYW1lIjoiZGVmYXVsdF9mYWNlX21hdGVyaWFsNyIsImRvdWJsZVNpZGVkIjp0cnVlfV0sIm1lc2hlcyI6W3sicHJpbWl0aXZlcyI6W3siYXR0cmlidXRlcyI6eyJOT1JNQUwiOjIsIlBPU0lUSU9OIjoxfSwiaW5kaWNlcyI6MCwibWF0ZXJpYWwiOjB9LHsiYXR0cmlidXRlcyI6eyJQT1NJVElPTiI6NCwiTk9STUFMIjo1fSwiaW5kaWNlcyI6MywibWF0ZXJpYWwiOjF9LHsiYXR0cmlidXRlcyI6eyJOT1JNQUwiOjgsIlBPU0lUSU9OIjo3fSwiaW5kaWNlcyI6NiwibWF0ZXJpYWwiOjJ9LHsiYXR0cmlidXRlcyI6eyJQT1NJVElPTiI6MTAsIk5PUk1BTCI6MTF9LCJpbmRpY2VzIjo5LCJtYXRlcmlhbCI6M30seyJhdHRyaWJ1dGVzIjp7Ik5PUk1BTCI6MTQsIlBPU0lUSU9OIjoxM30sImluZGljZXMiOjEyLCJtYXRlcmlhbCI6NH0seyJhdHRyaWJ1dGVzIjp7Ik5PUk1BTCI6MTcsIlBPU0lUSU9OIjoxNn0sImluZGljZXMiOjE1LCJtYXRlcmlhbCI6NX0seyJhdHRyaWJ1dGVzIjp7IlBPU0lUSU9OIjoxOSwiTk9STUFMIjoyMH0sImluZGljZXMiOjE4LCJtYXRlcmlhbCI6Nn0seyJhdHRyaWJ1dGVzIjp7IlBPU0lUSU9OIjoyMiwiTk9STUFMIjoyM30sImluZGljZXMiOjIxLCJtYXRlcmlhbCI6N31dfV0sIm5vZGVzIjpbeyJtYXRyaXgiOlsxLjAsMC4wLDAuMCwwLjAsMC4wLDEuMCwwLjAsMC4wLDAuMCwwLjAsMS4wLDAuMCwtMzkuMzcwMDc5MDQwNTI3MzQ3LDAuMCwwLjAsMS4wXSwibWVzaCI6MCwibmFtZSI6IjMxNzAyIn0seyJjaGlsZHJlbiI6WzBdLCJtYXRyaXgiOlswLjAyNTM5OTk5OTY5MzAzNjA4LDAuMCwwLjAsMC4wLDAuMCwwLjAsLTAuMDI1Mzk5OTk5NjkzMDM2MDgsMC4wLDAuMCwwLjAyNTM5OTk5OTY5MzAzNjA4LDAuMCwwLjAsMC4wLDAuMCwwLjAsMS4wXSwibmFtZSI6IlJvb3QgTm9kZSJ9XSwic2NlbmVzIjpbeyJub2RlcyI6WzFdfV0sInNjZW5lIjowfRgGAABCSU4AAAABAAIAAwAEAAUABgAHAAgACQAKAAsA9nqdQgAAAABxOOxC9nodQvZ6HUJxOOxC9nodQgAAAABxOOxC9nodQvZ6HUJxOOxCAAAAAPZ6nUJxOOxCAAAAAPZ6HUJxOOxCAAAAAPZ6nUJxOOxC9nodQvZ6HUJxOOxC9nqdQvZ6nUJxOOxC9nqdQvZ6nUJxOOxC9nodQvZ6HUJxOOxC9nqdQgAAAABxOOxCAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAABAAIAAwAEAAUA9nqdQvZ6nUIAAAAA9nqdQgAAAABxOOxC9nqdQgAAAAAAAAAA9nqdQgAAAABxOOxC9nqdQvZ6nUIAAAAA9nqdQvZ6nUJxOOxCAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAAABAAIAAwAEAAUA9nodQvZ6HUJxOOxCAAAAAPZ6HUIAAAAA9nodQvZ6HUIAAAAAAAAAAPZ6HUIAAAAA9nodQvZ6HUJxOOxCAAAAAPZ6HUJxOOxCAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAABAAIAAwAEAAUA9nodQvZ6HUJxOOxC9nodQgAAAAAAAAAA9nodQgAAAABxOOxC9nodQgAAAAAAAAAA9nodQvZ6HUJxOOxC9nodQvZ6HUIAAAAAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAAABAAIAAwAEAAUAAAAAAPZ6nUJxOOxC9nqdQvZ6nUIAAAAAAAAAAPZ6nUIAAAAA9nqdQvZ6nUIAAAAAAAAAAPZ6nUJxOOxC9nqdQvZ6nUJxOOxCAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAABAAIAAwAEAAUA9nqdQgAAAABxOOxC9nodQgAAAAAAAAAA9nqdQgAAAAAAAAAA9nodQgAAAAAAAAAA9nqdQgAAAABxOOxC9nodQgAAAABxOOxCAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAABAAIAAwAEAAUAAAAAAPZ6nUJxOOxCAAAAAPZ6HUIAAAAAAAAAAPZ6HUJxOOxCAAAAAPZ6HUIAAAAAAAAAAPZ6nUJxOOxCAAAAAPZ6nUIAAAAAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAACAvwAAAIAAAACAAAABAAIAAwAEAAUABgAHAAgACQAKAAsA9nqdQvZ6nUIAAAAAAAAAAPZ6HUIAAAAAAAAAAPZ6nUIAAAAAAAAAAPZ6HUIAAAAA9nqdQvZ6nUIAAAAA9nodQvZ6HUIAAAAA9nodQvZ6HUIAAAAA9nqdQvZ6nUIAAAAA9nodQgAAAAAAAAAA9nodQgAAAAAAAAAA9nqdQvZ6nUIAAAAA9nqdQgAAAAAAAAAAAAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/';
+
+function base64ToArrayBuffer(b64) {
+  const bin = atob(b64);
+  const buf = new ArrayBuffer(bin.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < bin.length; i++) view[i] = bin.charCodeAt(i);
+  return buf;
+}
+
+const loader = new THREE.GLTFLoader();
+loader.parse(base64ToArrayBuffer(GLB_BASE64), '', (gltf) => {
+  box = gltf.scene;
+  box.name = 'model';
+
+  // Centrar el modelo y posicionarlo sobre la rejilla
+  const bbox = new THREE.Box3().setFromObject(box);
+  const center = new THREE.Vector3();
+  bbox.getCenter(center);
+  const size = new THREE.Vector3();
+  bbox.getSize(size);
+
+  modelHeight = size.y / 2;
+
+  // Mover el modelo para que su base quede en Y=0
+  box.position.set(-center.x, -bbox.min.y, -center.z);
+
+  // Escalar si es muy grande o muy pequeño (normalizar a ~3 unidades de alto)
+  const targetH = 3;
+  if (size.y > 0) {
+    const s = targetH / size.y;
+    box.scale.setScalar(s);
+    box.position.multiplyScalar(s);
+    modelHeight = targetH / 2;
+  }
+
+  // Wrapper para poder mover el modelo en XZ sin afectar el centrado interno
+  const wrapper = new THREE.Group();
+  wrapper.add(box);
+  wrapper.name = 'wrapper';
+  scene.add(wrapper);
+
+  // Recolectar meshes, forzar material blanco y quitar sombras
+  const whiteMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    side: THREE.FrontSide,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+  });
+  boxMeshes = [];
+  box.traverse((child) => {
+    if (child.isMesh) {
+      child.material      = whiteMat;
+      child.castShadow    = false;
+      child.receiveShadow = false;
+      boxMeshes.push(child);
+    }
+  });
+
+  // Reemplazar referencia "box" por el wrapper para moverlo
+  box = wrapper;
+
+  // Aristas: se agregan DESPUÉS de que wrapper está en la escena
+  renderer.render(scene, camera);
+  addEdgesToWrapper(gltf.scene, wrapper);
+
+  // Registrar en lista global
+  allObjects.push({ wrapper, meshes: boxMeshes, edges: selEdges });
+
+}, (xhr) => {}, (err) => { console.error(err); });
+
+// ─── POSICIÓN MUNDO ───────────────────────────────────────────
+function getWorldPos(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x =  ((event.clientX - rect.left) / rect.width)  * 2 - 1;
+  mouse.y = -((event.clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const target = new THREE.Vector3();
+  raycaster.ray.intersectPlane(dragPlane, target);
+  return target;
+}
+
+// ─── EVENTOS DE MOUSE ─────────────────────────────────────────
+let mouseDownPos = { x: 0, y: 0 };
+
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (allObjects.length === 0) return;
+  mouseDownPos = { x: e.clientX, y: e.clientY };
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x =  ((e.clientX - rect.left) / rect.width)  * 2 - 1;
+  mouse.y = -((e.clientY - rect.top)  / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+
+  // Raycasting contra todos los objetos en escena
+  const allMeshes = allObjects.flatMap(o => o.meshes);
+  const hits = raycaster.intersectObjects(allMeshes, false);
+
+  if (hits.length > 0) {
+    // Identificar a qué wrapper pertenece el mesh golpeado
+    const hitMesh = hits[0].object;
+    const owner   = allObjects.find(o => o.meshes.includes(hitMesh));
+    if (!owner) return;
+
+    if (e.ctrlKey) {
+      // Ctrl+drag: clonar y arrastrar el clon
+      const cloned = cloneObject(owner.wrapper);
+      cloned.wrapper.position.copy(owner.wrapper.position);
+      cloned.wrapper.rotation.y = owner.wrapper.rotation.y;
+      box       = cloned.wrapper;
+      boxMeshes = cloned.meshes;
+    } else {
+      // Drag normal: mover el objeto tocado
+      box       = owner.wrapper;
+      boxMeshes = owner.meshes;
+    }
+
+    isDragging = true;
+    dragPlane.constant = -box.position.y;
+    const worldPos = getWorldPos(e);
+    if (worldPos) dragOffset.copy(box.position).sub(worldPos);
+    e.preventDefault();
+  }
+});
+
+renderer.domElement.addEventListener('mousemove', (e) => {
+  if (!isDragging || !box) return;
+  const worldPos = getWorldPos(e);
+  if (!worldPos) return;
+
+  let nx = worldPos.x + dragOffset.x;
+  let nz = worldPos.z + dragOffset.z;
+
+  nx = Math.round(nx / SNAP) * SNAP;
+  nz = Math.round(nz / SNAP) * SNAP;
+
+  box.position.x = nx;
+  box.position.z = nz;
+});
+
+renderer.domElement.addEventListener('mouseup', (e) => {
+  if (isDragging && box) {
+    const dx   = e.clientX - mouseDownPos.x;
+    const dz   = e.clientY - mouseDownPos.y;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    // Solo rotar si fue un clic (sin arrastrar) y sin Ctrl
+    if (dist < 4 && !e.ctrlKey) {
+      const allMeshes = allObjects.flatMap(o => o.meshes);
+      const hits = raycaster.intersectObjects(allMeshes, false);
+      if (hits.length > 0) box.rotation.y += Math.PI / 2;
+    }
+    isDragging = false;
+  }
+});
+
+
+// ─── PAN (rueda presionada + mover mouse) ─────────────────────
+let isPanning   = false;
+let panStart    = { x: 0, y: 0 };
+
+// La cámara isométrica apunta en la dirección (1,1,1) normalizada.
+// Para panear en el plano del suelo calculamos los ejes derecho y arriba
+// proyectados sobre XZ.
+const panRight = new THREE.Vector3();
+const panUp    = new THREE.Vector3();
+
+function updatePanAxes() {
+  // Eje derecho de la cámara proyectado en XZ
+  camera.getWorldDirection(panUp);
+  panRight.crossVectors(panUp, camera.up).normalize();
+  // "Arriba" en pantalla → movimiento en XZ perpendicular al eje derecho
+  panUp.crossVectors(camera.up, panRight).normalize();
+}
+
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (e.button === 1) { // rueda presionada
+    isPanning = true;
+    panStart  = { x: e.clientX, y: e.clientY };
+    updatePanAxes();
+    e.preventDefault();
+  }
+});
+
+renderer.domElement.addEventListener('mousemove', (e) => {
+  if (!isPanning) return;
+  const dx = e.clientX - panStart.x;
+  const dy = e.clientY - panStart.y;
+  panStart = { x: e.clientX, y: e.clientY };
+
+  // Escalar según el tamaño actual del frustum
+  const frustumW = camera.right - camera.left;
+  const speed    = frustumW / window.innerWidth;
+
+  const delta = new THREE.Vector3()
+    .addScaledVector(panRight, -dx * speed)
+    .addScaledVector(panUp,     dy * speed);
+
+  camera.position.add(delta);
+  camera.updateProjectionMatrix();
+});
+
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 1) isPanning = false;
+});
+
+// Evitar que el click de rueda abra el menú de scroll del navegador
+renderer.domElement.addEventListener('auxclick', (e) => {
+  if (e.button === 1) e.preventDefault();
+});
+
+// ─── RESIZE ───────────────────────────────────────────────────
+window.addEventListener('resize', () => {
+  const nw = window.innerWidth;
+  const nh = window.innerHeight;
+  const na = nw / nh;
+  camera.left   = -frustum * na;
+  camera.right  =  frustum * na;
+  camera.top    =  frustum;
+  camera.bottom = -frustum;
+  camera.updateProjectionMatrix();
+  renderer.setSize(nw, nh);
+});
+
+// ─── LOOP DE ANIMACIÓN ────────────────────────────────────────
+function animate() {
+  requestAnimationFrame(animate);
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
