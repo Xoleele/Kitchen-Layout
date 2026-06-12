@@ -11,7 +11,7 @@ scene.background = new THREE.Color(0xffffff)
 
 // ─── CÁMARA ORTOGRÁFICA (ISOMÉTRICA) ─────────────────────────────────────────
 export const aspect = W / H
-export const frustum = 5.6
+export const frustum = 2.8
 
 export const camera = new THREE.OrthographicCamera(
   -frustum * aspect, frustum * aspect,

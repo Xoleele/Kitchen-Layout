@@ -50,7 +50,7 @@ renderer.domElement.addEventListener('mousedown', (e: MouseEvent) => {
     // Ctrl + click: clonar y arrastrar el clon
     const cloned = cloneObject(owner.wrapper)
     cloned.wrapper.position.copy(owner.wrapper.position)
-    cloned.wrapper.rotation.y = owner.wrapper.rotation.y
+    // La rotacion vive en el pivot y ya viene clonada por clone(true).
     currentObj = cloned
   } else {
     currentObj = owner
@@ -94,7 +94,7 @@ renderer.domElement.addEventListener('mouseup', (e: MouseEvent) => {
   // Rotar solo si fue un clic sin arrastrar y sin Ctrl
   if (dist < 4 && !e.ctrlKey) {
     const owner = hitObject(e)
-    if (owner) owner.wrapper.rotation.y += Math.PI / 2
+    if (owner) owner.pivot.rotation.y += Math.PI / 2
   }
 
   isDragging = false

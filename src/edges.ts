@@ -9,10 +9,11 @@ import { CELL_SIZE } from './grid'
 export type { LineSegments2 }
 
 /** Genera aristas visibles (LineSegments2) para todos los meshes de un grupo,
- *  anadiendolas al wrapper. Devuelve los LineSegments2 creados. */
+ *  anadiendolas al contenedor `host`. Las coordenadas se calculan relativas a
+ *  `host` para que las aristas roten/transformen junto con el. */
 export function addEdgesToWrapper(
   modelGroup: THREE.Object3D,
-  wrapper: THREE.Group
+  host: THREE.Object3D
 ): LineSegments2[] {
   const created: LineSegments2[] = []
 
@@ -20,10 +21,10 @@ export function addEdgesToWrapper(
     if (!(child instanceof THREE.Mesh)) return
 
     child.updateWorldMatrix(true, false)
-    wrapper.updateWorldMatrix(true, false)
+    host.updateWorldMatrix(true, false)
 
     const relMatrix = new THREE.Matrix4()
-      .copy(wrapper.matrixWorld)
+      .copy(host.matrixWorld)
       .invert()
       .multiply(child.matrixWorld)
 
@@ -48,21 +49,21 @@ export function addEdgesToWrapper(
     })
 
     const line = new LineSegments2(lineGeo, lineMat)
-    wrapper.add(line)
+    host.add(line)
     created.push(line)
   })
 
   return created
 }
 
-/** Remueve y regenera las aristas de un wrapper dado su grupo de modelo. */
+/** Remueve y regenera las aristas de un host dado su grupo de modelo. */
 export function refreshEdges(
   existingEdges: LineSegments2[],
-  wrapper: THREE.Group,
+  host: THREE.Object3D,
   modelGroup: THREE.Object3D
 ): LineSegments2[] {
-  existingEdges.forEach(e => wrapper.remove(e))
-  return addEdgesToWrapper(modelGroup, wrapper)
+  existingEdges.forEach(e => host.remove(e))
+  return addEdgesToWrapper(modelGroup, host)
 }
 
 /** Actualiza resolucion de todos los LineMaterial al redimensionar. */
@@ -93,11 +94,18 @@ function snapToGrid(v: number): number {
   return Math.round(v / CELL_SIZE) * CELL_SIZE
 }
 
-/** Construye un objeto de escena a partir de un GLB cargado y lo registra. */
+/** Construye un objeto de escena a partir de un GLB cargado y lo registra.
+ *
+ *  Jerarquia:  wrapper (anclado a rejilla, se mueve al arrastrar)
+ *                └─ pivot (centrado en el centro de la celda; se ROTA aqui)
+ *                     ├─ model
+ *                     └─ edges
+ *  Rotar el pivot hace que el objeto gire alrededor del centro de la celda
+ *  sin que el ancla (wrapper) se desplace. */
 export function buildSceneObject(
   gltfScene: THREE.Group,
   opts: BuildOptions = {}
-): { wrapper: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
+): { wrapper: THREE.Group; pivot: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
   const {
     targetBase = 1.2,
     position = new THREE.Vector3(0, 0, 0),
@@ -113,12 +121,10 @@ export function buildSceneObject(
   const size = new THREE.Vector3()
   bbox.getSize(size)
 
-  // Posicionamiento del modelo dentro del wrapper.
+  // Posicionamiento del modelo dentro del pivot.
   if (keepOrigin) {
-    // Conservar el origen (0,0,0) original del modelo: no se toca su posicion.
     gltfScene.position.set(0, 0, 0)
   } else {
-    // Centrar en X/Z y apoyar la base en y = 0.
     gltfScene.position.set(-center.x, -bbox.min.y, -center.z)
   }
 
@@ -132,11 +138,22 @@ export function buildSceneObject(
     }
   }
 
+  // El centro de la celda esta a +CELL_SIZE/2 del origen (que esta en la
+  // interseccion). Colocamos el pivot ahi y compensamos al modelo restando ese
+  // offset, de modo que el modelo no cambie de sitio, pero el pivot quede
+  // exactamente en el centro de la celda como eje de giro.
+  const half = CELL_SIZE / 2
+  const pivot = new THREE.Group()
+  pivot.name = 'pivot'
+  pivot.position.set(half, 0, half)
+  gltfScene.position.x -= half
+  gltfScene.position.z -= half
+  pivot.add(gltfScene)
+
   const wrapper = new THREE.Group()
   wrapper.name = 'wrapper'
-  wrapper.add(gltfScene)
-  // El wrapper se coloca SIEMPRE sobre un punto de la rejilla, de modo que el
-  // origen (0,0,0) del modelo coincida con una interseccion de la rejilla.
+  wrapper.add(pivot)
+  // El wrapper se ancla SIEMPRE sobre una interseccion de la rejilla.
   wrapper.position.set(snapToGrid(position.x), position.y, snapToGrid(position.z))
   scene.add(wrapper)
 
@@ -159,14 +176,15 @@ export function buildSceneObject(
   })
 
   renderer.render(scene, camera)
-  const edges = addEdgesToWrapper(gltfScene, wrapper)
+  // Las aristas cuelgan del pivot para rotar junto con el modelo.
+  const edges = addEdgesToWrapper(gltfScene, pivot)
 
-  return { wrapper, meshes, edges }
+  return { wrapper, pivot, meshes, edges }
 }
 
-/** Alias retrocompatible: construye un objeto en el origen con base 1.2 m. */
+/** Alias retrocompatible. */
 export function buildFirstObject(
   gltfScene: THREE.Group
-): { wrapper: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
+): { wrapper: THREE.Group; pivot: THREE.Group; meshes: THREE.Mesh[]; edges: LineSegments2[] } {
   return buildSceneObject(gltfScene)
 }

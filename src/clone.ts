@@ -37,14 +37,16 @@ export function cloneObject(sourceWrapper: THREE.Group): SceneObject {
   scene.add(clone)
   renderer.render(scene, camera) // actualizar matrixWorld
 
-  // Encontrar el grupo del modelo dentro del clon (se llama 'model')
+  // Localizar el pivot y el modelo dentro del clon.
+  const clonePivot = (clone.getObjectByName('pivot') as THREE.Group) ?? clone
   const cloneModelGroup = clone.getObjectByName('model') ?? clone
 
-  // Generar aristas frescas
-  const cloneEdges = addEdgesToWrapper(cloneModelGroup, clone)
+  // Generar aristas frescas, colgadas del pivot para que roten con el modelo.
+  const cloneEdges = addEdgesToWrapper(cloneModelGroup, clonePivot)
 
   const sceneObj: SceneObject = {
     wrapper: clone,
+    pivot: clonePivot,
     meshes: cloneMeshes,
     edges: cloneEdges,
   }
